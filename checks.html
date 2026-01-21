@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Browser Calls / Feature & Event Checker</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 16px; }
+    .row { display:flex; gap:12px; flex-wrap: wrap; align-items:center; }
+    button { padding: 10px 14px; cursor:pointer; }
+    button:disabled { cursor:not-allowed; opacity: 0.6; }
+    .pill { padding:2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ccc; }
+    .pill.ok { border-color: #2e7d32; color:#2e7d32; }
+    .pill.warn { border-color:#ed6c02; color:#ed6c02; }
+    .pill.bad { border-color:#d32f2f; color:#d32f2f; }
+    .grid { display:grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border:1px solid #ddd; border-radius: 10px; padding: 12px; }
+    .card h2 { margin: 0 0 10px 0; font-size: 16px; }
+    table { width:100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align:left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { position: sticky; top: 0; background: #fafafa; z-index: 1; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .muted { color:#666; }
+    textarea { width:100%; min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+    .small { font-size: 12px; }
+    details summary { cursor:pointer; }
+  </style>
+</head>
+<body>
+  <h1>Browser Calls Checker</h1>
+  <p class="muted small">
+    1) Click <b>Start</b> to begin monitoring events and capturing API availability/values.
+    2) Interact with the page (scroll, click, keydown, etc.) so events can trigger.
+    3) Click <b>Print results</b> to output a report (and optionally copy JSON).
+  </p>
+
+  <div class="row">
+    <button id="btnStart">Start</button>
+    <button id="btnRefresh" disabled>Refresh API checks</button>
+    <button id="btnPrint" disabled>Print results</button>
+    <button id="btnCopy" disabled>Copy JSON</button>
+    <span id="status" class="pill warn">Not started</span>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Event checks</h2>
+      <div class="muted small">Status becomes: <b>triggered</b>, <b>not triggered</b>, or <b>unavailable</b>.</div>
+      <div style="max-height: 420px; overflow:auto; margin-top: 10px;">
+        <table id="eventsTable">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Target</th>
+              <th>Status</th>
+              <th>Count</th>
+              <th>Last seen (ms)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details style="margin-top:10px;">
+        <summary class="small">Tip: events only mark “triggered” when they actually fire</summary>
+        <div class="small muted" style="margin-top:6px;">
+          Example: move mouse to trigger <span class="mono">mousemove</span>, scroll to trigger <span class="mono">scroll</span>,
+          switch tabs to trigger <span class="mono">visibilitychange</span>, etc.
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>API / property checks</h2>
+      <div class="muted small">
+        Functions/classes → <b>exists true/false</b><br />
+        Variables/values → <b>value</b> or <b>undefined</b>
+      </div>
+      <div style="max-height: 420px; overflow:auto; margin-top: 10px;">
+        <table id="apiTable">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Kind</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details style="margin-top:10px;">
+        <summary class="small">Add/remove checks</summary>
+        <div class="small muted" style="margin-top:6px;">
+          Edit the <span class="mono">EVENT_CHECKS</span> and <span class="mono">API_CHECKS</span> arrays in the script.
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Output</h2>
+    <textarea id="output" placeholder="Click “Print results” after using the page..."></textarea>
+  </div>
+
+<script>
+(() => {
+  // -----------------------------
+  // Configure what to check here
+  // -----------------------------
+
+  // Events: target can be "window", "document", or "navigator" (rare), or any object path like "window" / "document".
+  // Note: some events never fire on some targets; we mark "unavailable" if addEventListener isn't present.
+  const EVENT_CHECKS = [
+    // common user actions
+    { name: "click", target: "document" },
+    { name: "pointerdown", target: "document" },
+    { name: "pointerup", target: "document" },
+    { name: "mousedown", target: "document" },
+    { name: "mouseup", target: "document" },
+    { name: "mousemove", target: "document" },
+    { name: "keydown", target: "document" },
+    { name: "keyup", target: "document" },
+    { name: "touchstart", target: "document" },
+    { name: "touchmove", target: "document" },
+    { name: "touchend", target: "document" },
+    { name: "copy", target: "document" },
+    { name: "paste", target: "document" },
+    { name: "cut", target: "document" },
+
+    // lifecycle/visibility/navigation-ish
+    { name: "DOMContentLoaded", target: "document" },
+    { name: "visibilitychange", target: "document" },
+    { name: "focus", target: "window" },
+    { name: "blur", target: "window" },
+    { name: "beforeunload", target: "window" },
+    { name: "pagehide", target: "window" },
+
+    // network / resize / scroll
+    { name: "online", target: "window" },
+    { name: "offline", target: "window" },
+    { name: "resize", target: "window" },
+    { name: "scroll", target: "window" },
+
+    // misc seen in your inventory
+    { name: "message", target: "window" },
+    { name: "error", target: "window" },
+    { name: "load", target: "window" },
+    { name: "beforeinstallprompt", target: "window" },
+    { name: "devicemotion", target: "window" },
+    { name: "storage", target: "window" },
+  ];
+
+  // API checks:
+  // kind:
+  //  - "function" => report exists true/false
+  //  - "class"    => report exists true/false
+  //  - "value"    => report actual value (or summary) / undefined
+  //
+  // path is a dotted path starting from window (e.g. "navigator.userAgent") OR "indexedDB" (global).
+  const API_CHECKS = [
+    // Notifications & permissions
+    { label: "window.Notification", kind: "class", path: "Notification" },
+    { label: "Notification.permission", kind: "value", path: "Notification.permission" },
+    { label: "Notification.requestPermission", kind: "function", path: "Notification.requestPermission" },
+    { label: "navigator.permissions", kind: "value", path: "navigator.permissions" },
+    { label: "navigator.permissions.query", kind: "function", path: "navigator.permissions.query" },
+
+    // Storage / IndexedDB
+    { label: "indexedDB", kind: "value", path: "indexedDB" },
+    { label: "navigator.storage", kind: "value", path: "navigator.storage" },
+    { label: "navigator.storage.estimate", kind: "function", path: "navigator.storage.estimate" },
+
+    // Clipboard
+    { label: "document.execCommand", kind: "function", path: "document.execCommand" },
+    { label: "navigator.clipboard", kind: "value", path: "navigator.clipboard" },
+    { label: "navigator.clipboard.writeText", kind: "function", path: "navigator.clipboard.writeText" },
+
+    // Share APIs
+    { label: "navigator.share", kind: "function", path: "navigator.share" },
+    { label: "navigator.canShare", kind: "function", path: "navigator.canShare" },
+
+    // Installed related apps
+    { label: "navigator.getInstalledRelatedApps", kind: "function", path: "navigator.getInstalledRelatedApps" },
+
+    // sendBeacon
+    { label: "navigator.sendBeacon", kind: "function", path: "navigator.sendBeacon" },
+
+    // Web Locks
+    { label: "LockManager", kind: "class", path: "LockManager" },
+    { label: "navigator.locks", kind: "value", path: "navigator.locks" },
+    { label: "navigator.locks.request", kind: "function", path: "navigator.locks.request" },
+
+    // User agent & platform
+    { label: "navigator.userAgent", kind: "value", path: "navigator.userAgent" },
+    { label: "navigator.platform", kind: "value", path: "navigator.platform" },
+    { label: "navigator.vendor", kind: "value", path: "navigator.vendor" },
+    { label: "navigator.appVersion", kind: "value", path: "navigator.appVersion" },
+
+    // Other navigator/window/document properties from your list
+    { label: "navigator.webdriver", kind: "value", path: "navigator.webdriver" },
+    { label: "navigator.languages", kind: "value", path: "navigator.languages" },
+    { label: "navigator.plugins", kind: "value", path: "navigator.plugins" },
+    { label: "navigator.mimeTypes", kind: "value", path: "navigator.mimeTypes" },
+    { label: "navigator.hardwareConcurrency", kind: "value", path: "navigator.hardwareConcurrency" },
+    { label: "navigator.maxTouchPoints", kind: "value", path: "navigator.maxTouchPoints" },
+    { label: "navigator.onLine", kind: "value", path: "navigator.onLine" },
+    { label: "navigator.connection", kind: "value", path: "navigator.connection" },
+    { label: "navigator.deviceMemory", kind: "value", path: "navigator.deviceMemory" },
+    { label: "navigator.geolocation", kind: "value", path: "navigator.geolocation" },
+    { label: "navigator.credentials", kind: "value", path: "navigator.credentials" },
+    { label: "navigator.getBattery", kind: "function", path: "navigator.getBattery" },
+    { label: "navigator.requestMediaKeySystemAccess", kind: "function", path: "navigator.requestMediaKeySystemAccess" },
+
+    { label: "window.devicePixelRatio", kind: "value", path: "window.devicePixelRatio" },
+    { label: "window.innerWidth", kind: "value", path: "window.innerWidth" },
+    { label: "window.innerHeight", kind: "value", path: "window.innerHeight" },
+    { label: "window.outerWidth", kind: "value", path: "window.outerWidth" },
+    { label: "window.outerHeight", kind: "value", path: "window.outerHeight" },
+    { label: "window.history.length", kind: "value", path: "window.history.length" },
+    { label: "window.fetch", kind: "function", path: "window.fetch" },
+    { label: "window.PushManager", kind: "class", path: "PushManager" },
+
+    { label: "document.visibilityState", kind: "value", path: "document.visibilityState" },
+    { label: "document.hasFocus", kind: "function", path: "document.hasFocus" },
+
+    // "native code inspection" related calls you listed (we only check existence, we do NOT run them)
+    { label: "Function.prototype.toString", kind: "function", path: "Function.prototype.toString" },
+    { label: "JSON.parse", kind: "function", path: "JSON.parse" },
+    { label: "window.gc", kind: "function", path: "window.gc" }, // usually undefined unless special flags
+  ];
+
+  // -----------------------------
+  // Implementation
+  // -----------------------------
+  const $ = (id) => document.getElementById(id);
+
+  const btnStart = $("btnStart");
+  const btnRefresh = $("btnRefresh");
+  const btnPrint = $("btnPrint");
+  const btnCopy = $("btnCopy");
+  const statusPill = $("status");
+  const output = $("output");
+
+  const eventsTBody = $("eventsTable").querySelector("tbody");
+  const apiTBody = $("apiTable").querySelector("tbody");
+
+  const state = {
+    started: false,
+    startTime: 0,
+    events: new Map(), // key => record
+    apis: new Map(),   // label => record
+    listeners: [],     // cleanup
+    lastPrintedJSON: "",
+  };
+
+  function nowMs() {
+    return Math.round(performance.now());
+  }
+
+  function setStatus(text, kind) {
+    statusPill.textContent = text;
+    statusPill.classList.remove("ok","warn","bad");
+    statusPill.classList.add(kind);
+  }
+
+  function safeStringifyValue(v) {
+    // Keep this readable and safe.
+    if (v === undefined) return "undefined";
+    if (v === null) return "null";
+    const t = typeof v;
+
+    if (t === "string") return JSON.stringify(v);
+    if (t === "number" || t === "boolean" || t === "bigint") return String(v);
+    if (t === "function") return "[Function]";
+    if (t === "symbol") return v.toString();
+
+    // Handle some common complex objects
+    if (Array.isArray(v)) {
+      const preview = v.slice(0, 10);
+      return `[Array(${v.length})] ${JSON.stringify(preview)}${v.length > 10 ? " …" : ""}`;
+    }
+
+    // Node / Window / Navigator etc
+    const ctor = v && v.constructor && v.constructor.name ? v.constructor.name : "Object";
+    if (ctor !== "Object") return `[${ctor}]`;
+
+    // Plain object: shallow preview
+    try {
+      const keys = Object.keys(v).slice(0, 12);
+      const previewObj = {};
+      for (const k of keys) previewObj[k] = v[k];
+      return `[Object] ${JSON.stringify(previewObj)}${Object.keys(v).length > keys.length ? " …" : ""}`;
+    } catch {
+      return "[Object]";
+    }
+  }
+
+  function resolvePath(path) {
+    // Supports "indexedDB" (global) or "window.innerWidth" or "navigator.userAgent" etc.
+    const parts = path.split(".");
+    let cur;
+
+    // If path starts with window/document/navigator explicitly, start there.
+    if (parts[0] === "window") { cur = window; parts.shift(); }
+    else if (parts[0] === "document") { cur = document; parts.shift(); }
+    else if (parts[0] === "navigator") { cur = navigator; parts.shift(); }
+    else {
+      // Otherwise treat as window global first
+      cur = window;
+    }
+
+    for (const p of parts) {
+      if (cur == null) return { ok: false, value: undefined };
+      try {
+        cur = cur[p];
+      } catch {
+        return { ok: false, value: undefined };
+      }
+    }
+    return { ok: true, value: cur };
+  }
+
+  function classifyResult(kind, value) {
+    if (kind === "value") {
+      return { result: safeStringifyValue(value), ok: value !== undefined };
+    }
+    // function/class: existence check
+    const exists = value !== undefined && value !== null;
+    return { result: `exists: ${exists}`, ok: exists };
+  }
+
+  function renderEventsTable() {
+    eventsTBody.innerHTML = "";
+    for (const rec of state.events.values()) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="mono">${rec.name}</td>
+        <td class="mono">${rec.target}</td>
+        <td><span class="pill ${rec.statusPillClass}">${rec.status}</span></td>
+        <td>${rec.count}</td>
+        <td>${rec.lastSeenMs == null ? "-" : rec.lastSeenMs}</td>
+      `;
+      eventsTBody.appendChild(tr);
+    }
+  }
+
+  function renderApiTable() {
+    apiTBody.innerHTML = "";
+    for (const rec of state.apis.values()) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="mono">${rec.label}</td>
+        <td class="mono">${rec.kind}</td>
+        <td class="mono">${rec.result}</td>
+      `;
+      apiTBody.appendChild(tr);
+    }
+  }
+
+  function initTables() {
+    // init event records
+    state.events.clear();
+    for (const e of EVENT_CHECKS) {
+      const key = `${e.target}:${e.name}`;
+      state.events.set(key, {
+        key,
+        name: e.name,
+        target: e.target,
+        status: "not triggered",
+        statusPillClass: "warn",
+        count: 0,
+        lastSeenMs: null,
+      });
+    }
+
+    // init api records (placeholder until refresh)
+    state.apis.clear();
+    for (const a of API_CHECKS) {
+      state.apis.set(a.label, {
+        label: a.label,
+        kind: a.kind,
+        path: a.path,
+        result: "(not checked yet)",
+      });
+    }
+
+    renderEventsTable();
+    renderApiTable();
+  }
+
+  function attachEventListeners() {
+    const getTargetObj = (targetStr) => {
+      if (targetStr === "window") return window;
+      if (targetStr === "document") return document;
+      if (targetStr === "navigator") return navigator; // usually no addEventListener
+      // allow dotted target paths if you add them later
+      const r = resolvePath(targetStr);
+      return r.value;
+    };
+
+    for (const e of EVENT_CHECKS) {
+      const targetObj = getTargetObj(e.target);
+      const key = `${e.target}:${e.name}`;
+      const rec = state.events.get(key);
+
+      const canListen = targetObj && typeof targetObj.addEventListener === "function";
+      if (!canListen) {
+        rec.status = "unavailable";
+        rec.statusPillClass = "bad";
+        continue;
+      }
+
+      const handler = () => {
+        rec.count += 1;
+        rec.lastSeenMs = nowMs();
+        rec.status = "triggered";
+        rec.statusPillClass = "ok";
+        // update just-in-time for responsiveness
+        renderEventsTable();
+      };
+
+      try {
+        targetObj.addEventListener(e.name, handler, { passive: true });
+        state.listeners.push(() => targetObj.removeEventListener(e.name, handler));
+      } catch {
+        rec.status = "unavailable";
+        rec.statusPillClass = "bad";
+      }
+    }
+
+    renderEventsTable();
+  }
+
+  function refreshApiChecks() {
+    for (const a of API_CHECKS) {
+      const { value } = resolvePath(a.path);
+      const { result, ok } = classifyResult(a.kind, value);
+      state.apis.set(a.label, {
+        label: a.label,
+        kind: a.kind,
+        path: a.path,
+        result: result,
+        ok,
+      });
+    }
+    renderApiTable();
+  }
+
+  function buildReport() {
+    const events = [];
+    for (const rec of state.events.values()) {
+      events.push({
+        event: rec.name,
+        target: rec.target,
+        status: rec.status,
+        count: rec.count,
+        lastSeenMs: rec.lastSeenMs,
+      });
+    }
+
+    const apis = [];
+    for (const rec of state.apis.values()) {
+      apis.push({
+        item: rec.label,
+        kind: rec.kind,
+        path: rec.path,
+        result: rec.result,
+      });
+    }
+
+    return {
+      meta: {
+        generatedAtISO: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        startedAtMs: state.startTime,
+        printedAtMs: nowMs(),
+      },
+      events,
+      apis,
+    };
+  }
+
+  function printResults() {
+    refreshApiChecks(); // ensure latest values
+    const report = buildReport();
+    const json = JSON.stringify(report, null, 2);
+    state.lastPrintedJSON = json;
+
+    // Also include a quick readable summary header above JSON
+    const triggered = report.events.filter(e => e.status === "triggered").length;
+    const unavailable = report.events.filter(e => e.status === "unavailable").length;
+
+    output.value =
+`# Browser Calls Checker Report
+Generated: ${report.meta.generatedAtISO}
+Triggered events: ${triggered}/${report.events.length}  |  Unavailable: ${unavailable}
+User-Agent: ${report.meta.userAgent}
+
+${json}`;
+  }
+
+  async function copyJSON() {
+    const text = state.lastPrintedJSON || output.value || "";
+    if (!text) return;
+
+    // Prefer clipboard API if available, fallback to execCommand
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        setStatus("Copied JSON", "ok");
+        return;
+      }
+    } catch {}
+
+    try {
+      output.focus();
+      output.select();
+      const ok = document.execCommand("copy");
+      setStatus(ok ? "Copied JSON" : "Copy failed", ok ? "ok" : "bad");
+    } catch {
+      setStatus("Copy failed", "bad");
+    }
+  }
+
+  function start() {
+    if (state.started) return;
+    state.started = true;
+    state.startTime = nowMs();
+
+    // Initialize + attach
+    initTables();
+    attachEventListeners();
+    refreshApiChecks();
+
+    // UI
+    btnStart.disabled = true;
+    btnRefresh.disabled = false;
+    btnPrint.disabled = false;
+    btnCopy.disabled = false;
+    setStatus("Started", "ok");
+  }
+
+  // init
+  initTables();
+
+  btnStart.addEventListener("click", start);
+  btnRefresh.addEventListener("click", () => {
+    if (!state.started) return;
+    refreshApiChecks();
+    setStatus("API checks refreshed", "ok");
+    setTimeout(() => setStatus("Started", "ok"), 900);
+  });
+  btnPrint.addEventListener("click", () => {
+    if (!state.started) return;
+    printResults();
+    setStatus("Results printed", "ok");
+    setTimeout(() => setStatus("Started", "ok"), 900);
+  });
+  btnCopy.addEventListener("click", copyJSON);
+
+})();
+</script>
+</body>
+</html>
